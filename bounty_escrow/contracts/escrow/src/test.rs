@@ -1,5 +1,22 @@
 #![cfg(test)]
 
+use soroban_sdk::{Symbol, TryFromVal, SymbolShort};
+use crate::events::{FeeCollected, FeeOperationType, BatchFundsReleased};
+
+// Helper to find the first event that can be deserialized into the given type
+fn find_event<T>(env: &Env) -> Option<T>
+where
+    T: TryFromVal<Env, soroban_sdk::Val>,
+{
+    for (_contract, _topics, data) in env.events().all().iter() {
+        if let Ok(event) = T::try_from_val(env, data) {
+            return Some(event);
+        }
+    }
+    None
+}
+
+
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
@@ -1845,6 +1862,57 @@ fn test_batch_funds_released_carries_v2_version() {
     let versions = events_with_version(&setup.env);
     assert!(versions.iter().any(|v| v == 2), "BatchFundsReleased must emit version=2");
 }
+
+// Added tests for event topics and payloads
+#[test]
+fn test_fee_collected_topic_and_payload() {
+    let setup = TestSetup::new();
+    // Enable fee collection with arbitrary rates
+    setup.escrow.update_fee_config(&Some(100_i128), &Some(100_i128), &None::<Address>, &Some(true));
+    let deadline = setup.env.ledger().timestamp() + 1000;
+    // This will emit a FeeCollected event
+    setup.escrow.lock_funds(&setup.depositor, &300, &1000, &deadline);
+    // Find the FeeCollected event
+    let mut found = false;
+    for (_contract, topics, data) in setup.env.events().all().iter() {
+        if let Ok(ev) = FeeCollected::try_from_val(&setup.env, data) {
+            // topics should be a single element "fee"
+            assert_eq!(topics.len(), 1);
+            assert_eq!(topics[0], Symbol::short("fee"));
+            assert_eq!(ev.version, EVENT_VERSION_V2);
+            found = true;
+        }
+    }
+    assert!(found, "FeeCollected event with correct topic not found");
+}
+
+#[test]
+fn test_batch_funds_released_topic_and_payload() {
+    let setup = TestSetup::new();
+    let deadline = setup.env.ledger().timestamp() + 1000;
+    // lock two bounties
+    setup.escrow.lock_funds(&setup.depositor, &400, &1000, &deadline);
+    setup.escrow.lock_funds(&setup.depositor, &401, &1000, &deadline);
+    // batch release
+    let items = soroban_sdk::vec![
+        &setup.env,
+        ReleaseFundsItem { bounty_id: 400, contributor: setup.contributor.clone() },
+        ReleaseFundsItem { bounty_id: 401, contributor: setup.contributor.clone() },
+    ];
+    setup.escrow.batch_release_funds(&items);
+    // Find the BatchFundsReleased event
+    let mut found = false;
+    for (_contract, topics, data) in setup.env.events().all().iter() {
+        if let Ok(ev) = BatchFundsReleased::try_from_val(&setup.env, data) {
+            assert_eq!(topics.len(), 1);
+            assert_eq!(topics[0], Symbol::short("b_rel"));
+            assert_eq!(ev.version, EVENT_VERSION_V2);
+            found = true;
+        }
+    }
+    assert!(found, "BatchFundsReleased event with correct topic not found");
+}
+
 
 #[test]
 fn test_approval_added_carries_v2_version() {
